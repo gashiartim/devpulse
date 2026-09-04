@@ -16,6 +16,7 @@ Item {
   property string scanOutput: ""
   property string lastMessage: ""
   property int pendingStopPort: 0
+  property string pendingStopKind: "process"
   property bool panelOpen: false
   property bool includeContainers: true
   property string includedPorts: ""
@@ -28,6 +29,7 @@ Item {
   readonly property string scannerPath: pluginDir + "/scripts/scan-servers.py"
   readonly property string gitInfoPath: pluginDir + "/scripts/git-info.py"
   readonly property string stopServerPath: pluginDir + "/scripts/stop-server.py"
+  readonly property string stopContainerPath: pluginDir + "/scripts/stop-container.py"
 
   property var gitCache: ({})
   property double lastGitScanMs: 0
@@ -149,14 +151,29 @@ Item {
       setMessage("A stop request is already running")
       return
     }
-    if (!server || !Number.isFinite(Number(server.pid))) return
+    if (!server) return
+    pendingStopPort = Math.max(0, Math.floor(Number(server.port || 0)))
+
+    if (server.source === "docker") {
+      var containerId = String(server.containerId || "").toLowerCase()
+      if (!containerId.match(/^[0-9a-f]{64}$/) || pendingStopPort <= 0) {
+        setMessage("Container changed — refresh required")
+        return
+      }
+      pendingStopKind = "container"
+      stopProcess.command = [stopContainerPath, containerId, String(pendingStopPort)]
+      stopProcess.running = true
+      return
+    }
+
+    if (!Number.isFinite(Number(server.pid))) return
     var pid = Math.floor(Number(server.pid))
     if (pid <= 1) return
     if (!String(server.startTime || "").match(/^\d+$/)) {
       setMessage("Process changed — refresh required")
       return
     }
-    pendingStopPort = Math.max(0, Math.floor(Number(server.port || 0)))
+    pendingStopKind = "process"
     stopProcess.command = [stopServerPath, String(pid), String(server.startTime), String(pendingStopPort)]
     stopProcess.running = true
   }
@@ -209,10 +226,17 @@ Item {
       onStreamFinished: {
         var result = null
         try { result = JSON.parse(String(text || "{}")) } catch (e) {}
-        if (result && result.ok === true) root.setMessage("Stopping server on :" + String(root.pendingStopPort || "server"))
+        if (result && result.ok === true) {
+          var label = root.pendingStopKind === "container" ? "container" : "server"
+          root.setMessage("Stopped " + label + " on :" + String(root.pendingStopPort || ""))
+        }
         else if (result && result.reason === "process-changed") root.setMessage("Process changed — refresh required")
         else if (result && result.reason === "process-gone") root.setMessage("Server already stopped")
+        else if (result && result.reason === "container-gone") root.setMessage("Container already stopped or removed")
+        else if (result && result.reason === "container-not-running") root.setMessage("Container is no longer running")
+        else if (result && result.reason === "container-changed") root.setMessage("Container changed — refresh required")
         else if (result && result.reason === "listener-changed") root.setMessage("Listener changed — refresh required")
+        else if (root.pendingStopKind === "container") root.setMessage("Could not stop that container")
         else root.setMessage("Could not stop that process")
         Qt.callLater(root.refreshNow)
       }

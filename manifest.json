@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.gashiartim.devpulse",
   "name": "DevPulse",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Artim",
   "license": "MIT",
   "description": "Local dev servers, Git context, Docker ports, and resource usage in one keyboard-first dashboard.",

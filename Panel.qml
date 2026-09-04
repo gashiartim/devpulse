@@ -27,7 +27,8 @@ Panel {
   readonly property var serverList: filterServers(allServers, filterText)
   readonly property int serverCount: serverList.length
   readonly property int totalServerCount: allServers.length
-  readonly property int exposedCount: countExposed(allServers)
+  readonly property int exposedCount: countFlagged(allServers, "exposed")
+  readonly property int unhealthyCount: countFlagged(allServers, "unhealthy")
   readonly property bool searchVisible: totalServerCount > 4 || filterText !== ""
   readonly property color foreground: bar ? bar.barForeground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.55)
@@ -45,17 +46,18 @@ Panel {
       var haystack = [
         server.projectName, server.framework, server.runtime, server.port,
         server.cwd, server.projectRoot, server.command, server.commandLine,
-        server.gitBranch, server.bindAddress, server.source, server.containerName
+        server.gitBranch, server.bindAddress, server.source, server.containerName,
+        server.healthStatus, server.containerStatus
       ].join(" ").toLowerCase()
       return haystack.indexOf(needle) >= 0
     })
   }
 
-  function countExposed(servers) {
+  function countFlagged(servers, flag) {
     if (!Array.isArray(servers)) return 0
     var count = 0
     for (var i = 0; i < servers.length; i++)
-      if (servers[i] && servers[i].exposed === true) count++
+      if (servers[i] && servers[i][flag] === true) count++
     return count
   }
 
@@ -288,6 +290,7 @@ Panel {
               : (root.totalServerCount === 0
                 ? "No development servers"
                 : String(root.totalServerCount) + " development server" + (root.totalServerCount === 1 ? "" : "s")
+                  + (root.unhealthyCount > 0 ? " · " + String(root.unhealthyCount) + " unhealthy" : "")
                   + (root.exposedCount > 0 ? " · " + String(root.exposedCount) + " LAN exposed" : ""))
             foreground: root.foreground
             fontFamily: root.fontFamily
@@ -407,7 +410,7 @@ Panel {
                   Text {
                     textFormat: Text.PlainText
                     text: "●"
-                    color: modelData.exposed === true
+                    color: modelData.exposed === true || modelData.unhealthy === true
                       ? (bar ? bar.urgent : Color.urgent)
                       : (root.cursorActive && serverRow.current ? Color.accent : Color.foreground)
                     font.family: root.fontFamily
@@ -442,9 +445,12 @@ Panel {
                   width: parent.width
                   textFormat: Text.PlainText
                   text: String(modelData.framework || modelData.runtime || "Process")
+                    + (modelData.unhealthy === true ? " · unhealthy" : "")
                     + (modelData.exposed === true ? " · LAN exposed" : "")
                     + (modelData.httpAvailable === true ? "" : " · no HTTP response")
-                  color: modelData.exposed === true ? (bar ? bar.urgent : Color.urgent) : root.dim
+                  color: modelData.exposed === true || modelData.unhealthy === true
+                    ? (bar ? bar.urgent : Color.urgent)
+                    : root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.bodySmall
                   elide: Text.ElideRight
@@ -536,7 +542,9 @@ Panel {
             ActionButton {
               width: actionRow.actionWidth
               text: "x Stop"
-              tooltipText: "Stop server"
+              tooltipText: root.selectedServer && root.selectedServer.source === "docker"
+                ? "Stop Docker container"
+                : "Stop server process"
               foreground: root.dim
               accent: bar ? bar.urgent : Color.urgent
               enabled: root.selectedServer !== null && root.selectedServer.canStop !== false
@@ -570,7 +578,9 @@ Panel {
           anchors.fill: parent
           opened: root.confirmOpen
           message: root.pendingStopServer
-            ? "Stop " + String(root.pendingStopServer.projectName || "this server") + " on :" + String(root.pendingStopServer.port || "") + "?"
+            ? "Stop " + (root.pendingStopServer.source === "docker" ? "container " : "")
+              + String(root.pendingStopServer.projectName || "this server")
+              + " on :" + String(root.pendingStopServer.port || "") + "?"
             : "Stop this server?"
           confirmText: "Stop"
           background: Color.popups.background

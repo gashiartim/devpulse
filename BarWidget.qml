@@ -11,23 +11,26 @@ BarWidget {
   property var service: null
 
   readonly property int serverCount: service ? service.servers.length : 0
-  readonly property int exposedCount: countExposedServers()
+  readonly property int exposedCount: countServersByFlag("exposed")
+  readonly property int unhealthyCount: countServersByFlag("unhealthy")
   readonly property bool warnExposed: setting("warnExposed", true) !== false
   readonly property string displayLabel: "󰆍 " + String(serverCount)
   readonly property string tooltipLabel: {
     var base = serverCount === 1
       ? "1 development server running"
       : String(serverCount) + " development servers running"
+    if (unhealthyCount > 0)
+      base += "\n" + String(unhealthyCount) + " unhealthy container" + (unhealthyCount === 1 ? "" : "s")
     if (exposedCount > 0)
       base += "\n" + String(exposedCount) + " reachable from the local network"
     return base
   }
 
-  function countExposedServers() {
+  function countServersByFlag(flag) {
     if (!service || !Array.isArray(service.servers)) return 0
     var count = 0
     for (var i = 0; i < service.servers.length; i++)
-      if (service.servers[i] && service.servers[i].exposed === true) count++
+      if (service.servers[i] && service.servers[i][flag] === true) count++
     return count
   }
 
@@ -133,7 +136,7 @@ BarWidget {
     bar: root.bar
     text: root.bar && root.bar.vertical ? "󰆍" : root.displayLabel
     labelVisible: true
-    active: root.warnExposed && root.exposedCount > 0
+    active: root.unhealthyCount > 0 || (root.warnExposed && root.exposedCount > 0)
     tooltipText: root.tooltipLabel
     horizontalMargin: 7.5
     verticalPadding: 6

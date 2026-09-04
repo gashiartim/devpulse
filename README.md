@@ -18,7 +18,8 @@ DevPulse is a keyboard-first Omarchy observability dashboard for local developme
 - Open the selected server in the default browser
 - Open a terminal in the project directory or launch the configured editor
 - Copy the detected web URL or raw listener address
-- Safe, confirmed SIGTERM stop with UID, process-start-time, and live socket-ownership verification
+- Safe, confirmed host-process stop with UID, process-start-time, and live socket-ownership verification
+- Verified Docker container stop with full container identity and published-port revalidation
 - Adaptive polling: fast while the panel is open and battery-friendly in the background
 - Keyboard navigation with native Omarchy panel behavior and stable selection across refreshes
 - Native Omarchy bar widget and popup styling
@@ -73,7 +74,7 @@ omarchy-shell shell summon io.github.gashiartim.devpulse '{}'
 
 ## Security
 
-DevPulse has no telemetry, accounts, cloud backend, privileged helper, or external network requests. It never requests elevated privileges, reads `.env` files, evaluates project scripts, or executes arbitrary project commands. Its only requests are short, concurrent `HEAD /` readiness probes to addresses already listening on this machine. Process discovery is limited to TCP listeners owned by the current user. Optional Docker discovery only reads `docker ps`; container stop/restart actions are deliberately disabled. Stopping a host process verifies the current UID, `/proc` start time, and current ownership of the selected listening socket immediately before sending `SIGTERM`; there is no force-kill action.
+DevPulse has no telemetry, accounts, cloud backend, privileged helper, or external network requests. It never requests elevated privileges, reads `.env` files, evaluates project scripts, or executes arbitrary project commands. Its only requests are short, concurrent `HEAD /` readiness probes to addresses already listening on this machine. Process discovery is limited to TCP listeners owned by the current user. Stopping a host process verifies the current UID, `/proc` start time, and current ownership of the selected listening socket immediately before sending `SIGTERM`; there is no force-kill action. Docker discovery reads `docker ps`. A confirmed container stop re-inspects the exact 64-character container identity, running state, and selected published port before invoking `docker stop`; restart and force-remove actions are deliberately unavailable.
 
 A red bar widget or `LAN exposed` row means a server is bound to a wildcard or non-loopback address and may be reachable by other devices. This warning can be disabled in widget settings without changing the binding. Widget settings also control Docker discovery, include/ignore port lists, metrics, Git context, and active/background refresh intervals.
 
@@ -89,7 +90,7 @@ Stock Omarchy components only:
 
 - Omarchy shell / Quickshell 0.3+
 - Linux `/proc`, `ss`, and `ps`
-- Python 3 (standard library only) for the scanner and safe stop helper
+- Python 3 (standard library only) for the scanner and safe stop helpers
 - `git` for optional branch metadata
 - `docker` for optional published-container discovery
 - `wl-copy` for clipboard actions
@@ -106,7 +107,7 @@ python3 -m unittest discover -s tests -v
 omarchy-shell shell rescanPlugins
 ```
 
-The tests create only loopback listeners, verify discovery, exposure classification, readiness probing and IPv4/IPv6 duplicate collapsing, exercise clean and dirty Git metadata, and test exact listener-bound SIGTERM plus stale-process and changed-socket protection. Test sockets and processes are always cleaned up. GitHub Actions runs the suite for every push and pull request.
+The tests create only loopback listeners, verify discovery, Docker publication parsing, exposure classification, readiness probing and IPv4/IPv6 duplicate collapsing, exercise clean and dirty Git metadata, and test exact listener-bound SIGTERM plus stale-process, changed-socket, and verified container-stop protection. Docker stop tests use an isolated fake client and never touch real containers. Test sockets and processes are always cleaned up. GitHub Actions runs the suite for every push and pull request.
 
 ## License
 

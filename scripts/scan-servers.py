@@ -437,6 +437,8 @@ def discover_containers() -> list[dict[str, Any]]:
         project_root, _, _ = find_project(workdir)
         image = str(container.get("Image", "container")).split("@", 1)[0]
         image_label = image.rsplit("/", 1)[-1].split(":", 1)[0]
+        health_status = str(container.get("HealthStatus", "")).lower()
+        unhealthy = health_status == "unhealthy" or "(unhealthy)" in str(container.get("Status", "")).lower()
         for public_port, (hosts, private_port) in parse_docker_published_ports(str(container.get("Ports", ""))).items():
             identity = f"docker:{container_id}:{public_port}"
             scheme = "https" if private_port in {443, 8443} else "http"
@@ -447,6 +449,8 @@ def discover_containers() -> list[dict[str, Any]]:
                 "uptimeSeconds": 0,
                 "runningFor": str(container.get("RunningFor", "")),
                 "containerStatus": str(container.get("Status", "")),
+                "healthStatus": health_status,
+                "unhealthy": unhealthy,
                 "port": public_port,
                 "privatePort": private_port,
                 "bindAddress": "0.0.0.0" if listener_is_exposed(hosts) else sorted(hosts)[0],
@@ -465,7 +469,7 @@ def discover_containers() -> list[dict[str, Any]]:
                 "memoryBytes": 0,
                 "owner": "",
                 "ownedByUser": False,
-                "canStop": False,
+                "canStop": True,
                 "source": "docker",
                 "containerId": container_id,
                 "containerName": str(container.get("Names", "")),
@@ -529,6 +533,8 @@ def main() -> int:
             "ownedByUser": True,
             "canStop": True,
             "source": "process",
+            "healthStatus": "",
+            "unhealthy": False,
             "score": score_server(cwd, project_root, has_git, framework_signal, port),
         }
     if "--include-containers" in sys.argv[1:]:

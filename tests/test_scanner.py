@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCANNER = ROOT / "scripts" / "scan-servers.py"
 GIT_INFO = ROOT / "scripts" / "git-info.py"
 STOP = ROOT / "scripts" / "stop-server.py"
+STOP_CONTAINER = ROOT / "scripts" / "stop-container.py"
 
 
 def load_scanner():
@@ -259,11 +260,56 @@ class DevPulseHelpersTest(unittest.TestCase):
             proc.terminate()
             proc.wait(timeout=3)
 
+    def test_container_stop_rechecks_identity_and_published_port(self):
+        container_id = "a" * 64
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            log_path = temp_path / "docker.log"
+            docker = temp_path / "docker"
+            docker.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json,os,sys\n"
+                "with open(os.environ['DOCKER_TEST_LOG'],'a') as f: f.write(' '.join(sys.argv[1:])+'\\n')\n"
+                "if sys.argv[1] == 'inspect':\n"
+                " print(json.dumps([{'Id':os.environ['DOCKER_TEST_ID'],'State':{'Running':True},"
+                "'NetworkSettings':{'Ports':{'3000/tcp':[{'HostIp':'0.0.0.0','HostPort':'54323'}]}}}]))\n"
+                "elif sys.argv[1] == 'stop': print(os.environ['DOCKER_TEST_ID'])\n",
+                encoding="utf-8",
+            )
+            docker.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = temp + os.pathsep + env.get("PATH", "")
+            env["DOCKER_TEST_LOG"] = str(log_path)
+            env["DOCKER_TEST_ID"] = container_id
+
+            stopped = subprocess.run(
+                [str(STOP_CONTAINER), container_id, "54323"],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+            self.assertTrue(json.loads(stopped.stdout)["ok"])
+            calls = log_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(calls[0], f"inspect {container_id}")
+            self.assertEqual(calls[1], f"stop --time 10 {container_id}")
+
+            log_path.write_text("", encoding="utf-8")
+            stale = subprocess.run(
+                [str(STOP_CONTAINER), container_id, "54324"],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertNotEqual(stale.returncode, 0)
+            self.assertIn("listener-changed", stale.stdout)
+            self.assertEqual(log_path.read_text(encoding="utf-8").count("stop"), 0)
+
     def test_manifest_has_marketplace_safe_metadata_and_entries(self):
         manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["schemaVersion"], 1)
         self.assertEqual(manifest["id"], "io.github.gashiartim.devpulse")
-        self.assertEqual(manifest["version"], "0.1.0")
+        self.assertEqual(manifest["version"], "0.2.0")
         self.assertEqual(manifest["license"], "MIT")
         self.assertTrue(manifest["barWidget"]["defaults"]["includeContainers"])
         for entry in manifest["entryPoints"].values():
@@ -278,6 +324,7 @@ class DevPulseHelpersTest(unittest.TestCase):
         self.assertIn("includedPorts: includedPorts, ignoredPorts: ignoredPorts", service)
         self.assertIn("filterServers(allServers, filterText)", panel)
         self.assertIn("server.httpAvailable !== true", panel)
+        self.assertIn("stopContainerPath", service)
 
 
 if __name__ == "__main__":
