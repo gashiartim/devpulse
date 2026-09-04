@@ -15,6 +15,7 @@ Panel {
   property var service: null
   property bool openedFromHotkey: false
   property int selectedIndex: -1
+  property string selectedServerId: ""
   property bool cursorActive: false
   property bool confirmOpen: false
   property var pendingStopServer: null
@@ -71,18 +72,38 @@ Panel {
     return false
   }
 
+  function serverIdentity(server) {
+    if (!server) return ""
+    return String(server.id || String(server.pid || "") + ":" + String(server.port || ""))
+  }
+
+  function indexForServerId(identity) {
+    if (!identity) return -1
+    for (var i = 0; i < serverList.length; i++) {
+      if (serverIdentity(serverList[i]) === identity) return i
+    }
+    return -1
+  }
+
   function clampSelection() {
     if (serverList.length === 0) {
       selectedIndex = -1
+      selectedServerId = ""
       cursorActive = false
-    } else if (selectedIndex < 0 || selectedIndex >= serverList.length) {
-      selectedIndex = 0
+      return
     }
+
+    var preservedIndex = indexForServerId(selectedServerId)
+    selectedIndex = preservedIndex >= 0
+      ? preservedIndex
+      : Math.max(0, Math.min(serverList.length - 1, selectedIndex))
+    selectedServerId = serverIdentity(serverList[selectedIndex])
   }
 
   function selectIndex(index, activateCursor) {
     if (serverList.length === 0) return
     selectedIndex = Math.max(0, Math.min(serverList.length - 1, index))
+    selectedServerId = serverIdentity(serverList[selectedIndex])
     if (activateCursor) cursorActive = true
     if (serverListView) serverListView.positionViewAtIndex(selectedIndex, ListView.Contain)
   }

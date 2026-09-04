@@ -13,7 +13,7 @@ DevPulse is a keyboard-first Omarchy dashboard for discovering and managing loca
 - Open a terminal in the project directory
 - Copy the local server URL
 - Safe, confirmed SIGTERM stop for current-user processes
-- Keyboard navigation with native Omarchy panel behavior
+- Keyboard navigation with native Omarchy panel behavior and stable selection across refreshes
 - Native Omarchy bar widget and popup styling
 
 ## Screenshot
