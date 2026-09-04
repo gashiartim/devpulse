@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "id": "artim.devpulse",
+  "name": "DevPulse",
+  "version": "1.0.0",
+  "author": "Artim",
+  "license": "MIT",
+  "description": "A keyboard-first dashboard for discovering and managing local development servers.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "DevPulse",
+    "description": "Discover and manage local development servers",
+    "category": "Development",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "showMetrics": true,
+      "showGit": true
+    },
+    "schema": [
+      {
+        "key": "showMetrics",
+        "type": "boolean",
+        "label": "Show CPU and memory",
+        "defaultValue": true
+      },
+      {
+        "key": "showGit",
+        "type": "boolean",
+        "label": "Show Git branch",
+        "defaultValue": true
+      }
+    ]
+  }
+}
