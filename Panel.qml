@@ -107,7 +107,12 @@ Panel {
   function terminalSelected() {
     var server = root.selectedServer
     if (!server || !server.cwd) return
-    Quickshell.execDetached(["xdg-terminal-exec", "--dir=" + String(server.cwd)])
+    var cwd = String(server.cwd)
+    Quickshell.execDetached([
+      "xdg-terminal-exec", "--", "sh", "-c",
+      "cd -- \"$1\" || exit 1; exec \"${SHELL:-/bin/sh}\"",
+      "devpulse", cwd
+    ])
   }
 
   function copySelected() {
