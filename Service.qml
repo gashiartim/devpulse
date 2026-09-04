@@ -101,6 +101,10 @@ Item {
   }
 
   function stopServer(server) {
+    if (stopProcess.running) {
+      setMessage("A stop request is already running")
+      return
+    }
     if (!server || !Number.isFinite(Number(server.pid))) return
     var pid = Math.floor(Number(server.pid))
     if (pid <= 1) return
@@ -117,6 +121,7 @@ Item {
     id: scanTimer
     interval: 3000
     repeat: true
+    running: true
     triggeredOnStart: true
     onTriggered: root.refreshNow()
   }
@@ -162,6 +167,4 @@ Item {
     }
     stderr: StdioCollector { waitForEnd: true }
   }
-
-  Component.onCompleted: root.refreshNow()
 }

@@ -380,15 +380,56 @@ Panel {
 
           PanelSeparator { visible: root.serverCount > 0; foreground: root.foreground }
 
-          Text {
+          Row {
+            id: actionRow
             width: parent.width
-            textFormat: Text.PlainText
-            text: "↵ Open    t Terminal    c Copy    x Stop    r Refresh"
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            horizontalAlignment: Text.AlignHCenter
-            elide: Text.ElideRight
+            spacing: Style.space(3)
+            readonly property real actionWidth: (width - spacing * 4) / 5
+
+            ActionButton {
+              width: actionRow.actionWidth
+              text: "↵ Open"
+              tooltipText: "Open in browser"
+              foreground: root.dim
+              enabled: root.selectedServer !== null
+              onClicked: root.openSelected()
+            }
+
+            ActionButton {
+              width: actionRow.actionWidth
+              text: "t Terminal"
+              tooltipText: "Open project terminal"
+              foreground: root.dim
+              enabled: root.selectedServer !== null && !!root.selectedServer.cwd
+              onClicked: root.terminalSelected()
+            }
+
+            ActionButton {
+              width: actionRow.actionWidth
+              text: "c Copy"
+              tooltipText: "Copy server URL"
+              foreground: root.dim
+              enabled: root.selectedServer !== null
+              onClicked: root.copySelected()
+            }
+
+            ActionButton {
+              width: actionRow.actionWidth
+              text: "x Stop"
+              tooltipText: "Stop server"
+              foreground: root.dim
+              accent: bar ? bar.urgent : Color.urgent
+              enabled: root.selectedServer !== null
+              onClicked: root.requestStop()
+            }
+
+            ActionButton {
+              width: actionRow.actionWidth
+              text: "r Refresh"
+              tooltipText: "Refresh servers"
+              foreground: root.dim
+              onClicked: if (root.service) root.service.refreshNow()
+            }
           }
         }
 

@@ -100,7 +100,7 @@ BarWidget {
     bar: root.bar
     text: root.bar && root.bar.vertical ? "󰆍" : root.displayLabel
     labelVisible: true
-    active: root.serverCount > 0
+    active: false
     tooltipText: root.tooltipLabel
     horizontalMargin: 7.5
     verticalPadding: 6

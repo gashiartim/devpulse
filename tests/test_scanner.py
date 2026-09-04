@@ -1,11 +1,11 @@
-import json
 import importlib.util
+import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -24,6 +24,13 @@ def load_scanner():
     return module
 
 
+def process_start_time(pid):
+    raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    closing = raw.rfind(")")
+    fields = raw[closing + 2:].split()
+    return fields[19]
+
+
 class DevPulseHelpersTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -34,19 +41,82 @@ class DevPulseHelpersTest(unittest.TestCase):
         self.assertEqual(self.scanner.parse_endpoint("[::1]:5173"), ("::1", 5173))
         self.assertEqual(self.scanner.parse_endpoint("0.0.0.0:43123"), ("0.0.0.0", 43123))
 
-    def test_framework_detection_covers_common_javascript_servers(self):
+    def test_browser_host_uses_reachable_listener_address(self):
+        self.assertEqual(self.scanner.browser_host({"0.0.0.0"}), "localhost")
+        self.assertEqual(self.scanner.browser_host({"::1"}), "localhost")
+        self.assertEqual(self.scanner.browser_host({"192.168.10.170"}), "192.168.10.170")
+        self.assertEqual(self.scanner.browser_host({"fe80::1%enp1s0"}), "[fe80::1%25enp1s0]")
+
+    def test_listener_parser_collapses_ipv4_and_ipv6_duplicates(self):
+        output = "\n".join((
+            'LISTEN 0 511 127.0.0.1:43123 0.0.0.0:* users:(("python3",pid=123,fd=3))',
+            'LISTEN 0 511 [::1]:43123 [::]:* users:(("python3",pid=123,fd=4))',
+        ))
+        original = self.scanner.run_capture
+        self.scanner.run_capture = lambda argv, timeout=2.0: output
+        try:
+            self.assertEqual(
+                self.scanner.parse_listeners(),
+                {(123, 43123): {"127.0.0.1", "::1"}},
+            )
+        finally:
+            self.scanner.run_capture = original
+
+    def test_framework_detection_uses_package_dependencies(self):
         cases = (
-            ("pnpm next dev", {"next": "^15"}, "Next.js"),
-            ("vite --host", {"vite": "^6"}, "Vite"),
-            ("yarn rw dev", {"@redwoodjs/core": "^8"}, "RedwoodJS"),
-            ("nest start --watch", {"@nestjs/core": "^11"}, "NestJS"),
-            ("nuxi dev", {"nuxt": "^3"}, "Nuxt"),
+            ({"dependencies": {"next": "^15"}}, "Next.js"),
+            ({"devDependencies": {"vite": "^6"}}, "Vite"),
+            ({"dependencies": {"@redwoodjs/core": "^8"}}, "RedwoodJS"),
+            ({"dependencies": {"@nestjs/core": "^11"}}, "NestJS"),
+            ({"dependencies": {"nuxt": "^3"}}, "Nuxt"),
         )
-        for command, package, expected in cases:
-            framework, runtime, signal = self.scanner.detect_framework(command, package, "node")
+        for package, expected in cases:
+            framework, runtime, detected = self.scanner.detect_framework("node server.js", package, "node")
             self.assertEqual(framework, expected)
             self.assertEqual(runtime, "Node.js")
-            self.assertTrue(signal)
+            self.assertTrue(detected)
+
+    def test_live_scan_discovers_and_collapses_loopback_listeners(self):
+        ipv4 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        ipv6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        try:
+            ipv4.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            ipv4.bind(("127.0.0.1", 0))
+            port = ipv4.getsockname()[1]
+            ipv4.listen()
+
+            ipv6.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            ipv6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            ipv6.bind(("::1", port))
+            ipv6.listen()
+
+            rows = json.loads(subprocess.check_output([str(SCANNER)], text=True))
+            matches = [row for row in rows if row["pid"] == os.getpid() and row["port"] == port]
+            self.assertEqual(len(matches), 1)
+            self.assertEqual(set(matches[0]["bindAddresses"]), {"127.0.0.1", "::1"})
+            self.assertEqual(matches[0]["url"], f"http://localhost:{port}")
+        finally:
+            ipv6.close()
+            ipv4.close()
+
+    def test_git_info_reports_clean_and_dirty_repo(self):
+        with tempfile.TemporaryDirectory() as temp:
+            subprocess.run(["git", "init", "-q", "-b", "main", temp], check=True)
+            subprocess.run(["git", "-C", temp, "config", "user.name", "DevPulse Test"], check=True)
+            subprocess.run(["git", "-C", temp, "config", "user.email", "devpulse@example.invalid"], check=True)
+            tracked = Path(temp) / "tracked.txt"
+            tracked.write_text("clean\n", encoding="utf-8")
+            subprocess.run(["git", "-C", temp, "add", "tracked.txt"], check=True)
+            subprocess.run(["git", "-C", temp, "commit", "-q", "-m", "fixture"], check=True)
+
+            clean = json.loads(subprocess.check_output([str(GIT_INFO), json.dumps([temp])], text=True))[temp]
+            self.assertTrue(clean["available"])
+            self.assertEqual(clean["branch"], "main")
+            self.assertFalse(clean["dirty"])
+
+            tracked.write_text("dirty\n", encoding="utf-8")
+            dirty = json.loads(subprocess.check_output([str(GIT_INFO), json.dumps([temp])], text=True))[temp]
+            self.assertTrue(dirty["dirty"])
 
     def test_git_info_handles_missing_and_non_repo_paths(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -56,6 +126,22 @@ class DevPulseHelpersTest(unittest.TestCase):
             self.assertFalse(data[temp]["available"])
             self.assertFalse(data["/does/not/exist"]["available"])
 
+    def test_stop_sends_sigterm_to_exact_process(self):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            result = subprocess.run(
+                [str(STOP), str(proc.pid), process_start_time(proc.pid)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(json.loads(result.stdout)["ok"])
+            self.assertEqual(proc.wait(timeout=3), -signal.SIGTERM)
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=3)
+
     def test_stop_rejects_stale_start_time_without_signaling(self):
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
         try:
@@ -64,7 +150,7 @@ class DevPulseHelpersTest(unittest.TestCase):
             self.assertIn("process-changed", result.stdout)
             self.assertIsNone(proc.poll())
         finally:
-            os.kill(proc.pid, signal.SIGTERM)
+            proc.terminate()
             proc.wait(timeout=3)
 
     def test_stop_requires_a_start_time_token(self):
@@ -75,21 +161,8 @@ class DevPulseHelpersTest(unittest.TestCase):
             self.assertIn("invalid-pid", result.stdout)
             self.assertIsNone(proc.poll())
         finally:
-            os.kill(proc.pid, signal.SIGTERM)
+            proc.terminate()
             proc.wait(timeout=3)
-
-    @unittest.skipUnless(os.environ.get("DEVPULSE_LIVE_FIXTURE") == "1", "requires loopback fixture namespace")
-    def test_live_scan_has_expected_fixture_ports(self):
-        fixture_dir = Path(os.environ.get("DEVPULSE_FIXTURE_DIR", "/tmp/devpulse-live-test"))
-        marker = fixture_dir / "pyproject.toml"
-        fixture_dir.mkdir(parents=True, exist_ok=True)
-        marker.touch(exist_ok=True)
-        try:
-            rows = json.loads(subprocess.check_output([str(SCANNER)], text=True))
-            ports = {row["port"] for row in rows}
-            self.assertTrue({43123, 43124}.issubset(ports), ports)
-        finally:
-            marker.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

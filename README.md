@@ -4,14 +4,14 @@ DevPulse is a keyboard-first Omarchy dashboard for discovering and managing loca
 
 ## Features
 
-- Automatic localhost server discovery
+- Automatic local development server discovery
 - Best-effort framework and runtime detection (Next.js, Vite, RedwoodJS, NestJS, Astro, Nuxt, Remix/React Router, Django, FastAPI/Uvicorn, Flask, Rails, Go, Rust, and PHP)
 - Project names and compact working-directory paths
 - Git branch and dirty-state indicator
 - CPU and memory usage
 - Open the selected server in the default browser
 - Open a terminal in the project directory
-- Copy the localhost URL
+- Copy the local server URL
 - Safe, confirmed SIGTERM stop for current-user processes
 - Keyboard navigation with native Omarchy panel behavior
 - Native Omarchy bar widget and popup styling
@@ -22,17 +22,25 @@ DevPulse is a keyboard-first Omarchy dashboard for discovering and managing loca
 
 ## Installation
 
-DevPulse is ready for an Omarchy plugin repository. Once this repository has a public Git URL, install it with:
+Install DevPulse from its public GitHub repository:
 
 ```bash
-omarchy plugin add <DEV_PULSE_GIT_URL> --enable --yes
+omarchy plugin add https://github.com/gashiartim/devpulse.git --enable
 ```
 
-The installer validates `manifest.json`, places the plugin in `~/.config/omarchy/plugins/artim.devpulse/`, and enables the bar widget. For a local checkout during development, copy the folder there and run:
+Omarchy validates `manifest.json`, places the plugin in `~/.config/omarchy/plugins/artim.devpulse/`, and enables the bar widget. Review third-party plugin code before enabling it because Omarchy plugins run unsandboxed.
+
+For a local checkout during development, copy the folder there and run:
 
 ```bash
 omarchy-shell shell rescanPlugins
 omarchy plugin enable artim.devpulse --section right
+```
+
+## Removal
+
+```bash
+omarchy plugin remove artim.devpulse
 ```
 
 ## Keyboard shortcuts
@@ -48,7 +56,7 @@ omarchy plugin enable artim.devpulse --section right
 | `r` | Refresh immediately |
 | `Esc` | Close the panel |
 
-Left-click the bar widget to toggle the panel. Middle-click refreshes; right-click opens the panel. The panel can also be summoned through shell IPC:
+Click the footer actions to open, launch a terminal, copy, stop, or refresh; the same actions are available from the keyboard. Left-click the bar widget to toggle the panel. Middle-click refreshes; right-click opens the panel. The panel can also be summoned through shell IPC:
 
 ```bash
 omarchy-shell shell summon artim.devpulse '{}'
@@ -86,7 +94,7 @@ python3 -m unittest discover -s tests -v
 omarchy-shell shell rescanPlugins
 ```
 
-The fixture tests create only loopback listeners, verify discovery, exercise Git metadata parsing, and test exact-PID SIGTERM plus stale-PID protection. The scanner also collapses IPv4/IPv6 listener duplicates by PID and logical port. No fixture process is left running.
+The tests create only loopback listeners, verify discovery and IPv4/IPv6 duplicate collapsing, exercise clean and dirty Git metadata, and test successful exact-PID SIGTERM plus stale-PID protection. Test sockets and processes are always cleaned up.
 
 ## License
 

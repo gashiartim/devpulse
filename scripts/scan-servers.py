@@ -62,6 +62,18 @@ def parse_endpoint(value: str) -> tuple[str, int] | None:
     return host or "*", port
 
 
+def browser_host(hosts: set[str]) -> str:
+    """Choose a URL-safe host that can reach the reported listener."""
+    if not hosts or any(host in {"0.0.0.0", "::", "*"} for host in hosts):
+        return "localhost"
+    if "127.0.0.1" in hosts or "::1" in hosts:
+        return "localhost"
+    host = sorted(hosts, key=lambda value: (":" in value, value))[0]
+    if ":" in host:
+        return f"[{host.replace('%', '%25')}]"
+    return host
+
+
 def parse_listeners() -> dict[tuple[int, int], set[str]]:
     output = run_capture(["ss", "-H", "-ltnp"])
     listeners: dict[tuple[int, int], set[str]] = {}
@@ -136,8 +148,8 @@ def package_data(root: Path) -> dict[str, Any]:
     if not package_path.is_file():
         return {}
     try:
-        raw = package_path.read_text(encoding="utf-8", errors="replace")
-        data = json.loads(raw[:1_000_000])
+        raw = read_text(package_path, 1_000_000)
+        data = json.loads(raw)
         return data if isinstance(data, dict) else {}
     except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
@@ -266,6 +278,7 @@ def main() -> int:
         host_list = sorted(hosts)
         wildcard = any(host in {"0.0.0.0", "::", "*"} for host in host_list)
         bind_address = "0.0.0.0" if wildcard else (host_list[0] if host_list else "localhost")
+        url_host = browser_host(hosts)
         scheme = "https" if re.search(r"(?:https://|--https(?:\b|=)|--ssl(?:\b|=)|--tls(?:\b|=)|\.pem\b|\.key\b)", command_line.lower()) else "http"
         output[identity] = {
             "id": identity,
@@ -274,7 +287,7 @@ def main() -> int:
             "port": port,
             "bindAddress": bind_address,
             "bindAddresses": host_list,
-            "url": f"{scheme}://localhost:{port}",
+            "url": f"{scheme}://{url_host}:{port}",
             "command": comm or "Process",
             "commandLine": command_line,
             "cwd": cwd,
