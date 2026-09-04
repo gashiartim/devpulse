@@ -196,9 +196,11 @@ Panel {
           PanelHero {
             width: parent.width
             title: "DevPulse"
-            meta: root.serverCount === 0
-              ? "No development servers"
-              : String(root.serverCount) + " development server" + (root.serverCount === 1 ? "" : "s")
+            meta: root.service && root.service.scanning
+              ? "Scanning local listeners…"
+              : (root.serverCount === 0
+                ? "No development servers"
+                : String(root.serverCount) + " development server" + (root.serverCount === 1 ? "" : "s"))
             foreground: root.foreground
             fontFamily: root.fontFamily
             iconComponent: Component {
@@ -210,24 +212,6 @@ Panel {
                 font.pixelSize: Style.font.display
               }
             }
-            trailingControl: Component {
-              PanelActionButton {
-                iconText: "󰑐"
-                tooltipText: "Refresh"
-                foreground: root.foreground
-                onClicked: if (root.service) root.service.refreshNow()
-              }
-            }
-          }
-
-          Text {
-            width: parent.width
-            visible: root.service && root.service.scanning
-            textFormat: Text.PlainText
-            text: "Scanning local listeners…"
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
           }
 
           Text {
@@ -428,7 +412,8 @@ Panel {
               text: "r Refresh"
               tooltipText: "Refresh servers"
               foreground: root.dim
-              onClicked: if (root.service) root.service.refreshNow()
+              enabled: root.service !== null && !root.service.scanning
+              onClicked: root.service.refreshNow()
             }
           }
         }
