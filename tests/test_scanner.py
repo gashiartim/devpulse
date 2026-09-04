@@ -6,7 +6,9 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
@@ -31,6 +33,15 @@ def process_start_time(pid):
     return fields[19]
 
 
+class QuietHandler(BaseHTTPRequestHandler):
+    def do_HEAD(self):
+        self.send_response(204)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        pass
+
+
 class DevPulseHelpersTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -41,11 +52,61 @@ class DevPulseHelpersTest(unittest.TestCase):
         self.assertEqual(self.scanner.parse_endpoint("[::1]:5173"), ("::1", 5173))
         self.assertEqual(self.scanner.parse_endpoint("0.0.0.0:43123"), ("0.0.0.0", 43123))
 
+    def test_port_specs_support_ranges_and_remain_bounded(self):
+        self.assertEqual(self.scanner.parse_port_spec("3000, 4100-4102 nope"), {3000, 4100, 4101, 4102})
+        self.assertEqual(self.scanner.parse_port_spec("3-1"), {1, 2, 3})
+        self.assertLessEqual(len(self.scanner.parse_port_spec("1-65535")), self.scanner.MAX_CONFIG_PORTS)
+
+    def test_scanner_configuration_parses_include_and_ignore_lists(self):
+        included, ignored = self.scanner.read_configuration([
+            "--config", '{"includedPorts":"4100","ignoredPorts":"5000-5001"}'
+        ])
+        self.assertEqual(included, {4100})
+        self.assertEqual(ignored, {5000, 5001})
+
     def test_browser_host_uses_reachable_listener_address(self):
         self.assertEqual(self.scanner.browser_host({"0.0.0.0"}), "localhost")
         self.assertEqual(self.scanner.browser_host({"::1"}), "localhost")
         self.assertEqual(self.scanner.browser_host({"192.168.10.170"}), "192.168.10.170")
         self.assertEqual(self.scanner.browser_host({"fe80::1%enp1s0"}), "[fe80::1%25enp1s0]")
+
+    def test_exposure_detection_distinguishes_loopback_and_lan(self):
+        self.assertFalse(self.scanner.listener_is_exposed({"127.0.0.1", "::1"}))
+        self.assertTrue(self.scanner.listener_is_exposed({"0.0.0.0"}))
+        self.assertTrue(self.scanner.listener_is_exposed({"::"}))
+        self.assertTrue(self.scanner.listener_is_exposed({"192.168.10.170"}))
+
+    def test_docker_port_parser_groups_dual_stack_publications(self):
+        ports = self.scanner.parse_docker_published_ports(
+            "0.0.0.0:54323->3000/tcp, [::]:54323->3000/tcp, 5432/tcp"
+        )
+        self.assertEqual(set(ports), {54323})
+        self.assertEqual(ports[54323][0], {"0.0.0.0", "::"})
+        self.assertEqual(ports[54323][1], 3000)
+
+    def test_docker_project_name_uses_compose_context(self):
+        container = {
+            "Names": "web_reliva",
+            "Labels": "com.docker.compose.project=reliva,com.docker.compose.service=web",
+            "Image": "example/web:latest",
+        }
+        self.assertEqual(self.scanner.container_project_name(container), "Reliva · web")
+
+    def test_http_probe_accepts_real_http_and_rejects_non_http(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        raw.bind(("127.0.0.1", 0))
+        raw.listen()
+        try:
+            self.assertTrue(self.scanner.probe_http_url(f"http://127.0.0.1:{server.server_port}"))
+            self.assertFalse(self.scanner.probe_http_url(f"http://127.0.0.1:{raw.getsockname()[1]}"))
+        finally:
+            raw.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
     def test_listener_parser_collapses_ipv4_and_ipv6_duplicates(self):
         output = "\n".join((
@@ -95,6 +156,9 @@ class DevPulseHelpersTest(unittest.TestCase):
             self.assertEqual(len(matches), 1)
             self.assertEqual(set(matches[0]["bindAddresses"]), {"127.0.0.1", "::1"})
             self.assertEqual(matches[0]["url"], f"http://localhost:{port}")
+            self.assertFalse(matches[0]["exposed"])
+            self.assertFalse(matches[0]["httpAvailable"])
+            self.assertGreaterEqual(matches[0]["uptimeSeconds"], 0)
         finally:
             ipv6.close()
             ipv4.close()
@@ -126,26 +190,42 @@ class DevPulseHelpersTest(unittest.TestCase):
             self.assertFalse(data[temp]["available"])
             self.assertFalse(data["/does/not/exist"]["available"])
 
-    def test_stop_sends_sigterm_to_exact_process(self):
-        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    def test_stop_sends_sigterm_to_exact_listener_process(self):
+        script = (
+            "import http.server,sys; "
+            "s=http.server.ThreadingHTTPServer(('127.0.0.1',0),http.server.SimpleHTTPRequestHandler); "
+            "print(s.server_port,flush=True); s.serve_forever()"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-u", "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
         try:
+            self.assertIsNotNone(proc.stdout)
+            port = int(proc.stdout.readline().strip())
             result = subprocess.run(
-                [str(STOP), str(proc.pid), process_start_time(proc.pid)],
+                [str(STOP), str(proc.pid), process_start_time(proc.pid), str(port)],
                 capture_output=True,
                 text=True,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertTrue(json.loads(result.stdout)["ok"])
+            payload = json.loads(result.stdout)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["port"], port)
             self.assertEqual(proc.wait(timeout=3), -signal.SIGTERM)
         finally:
             if proc.poll() is None:
                 proc.terminate()
                 proc.wait(timeout=3)
+            if proc.stdout is not None:
+                proc.stdout.close()
 
     def test_stop_rejects_stale_start_time_without_signaling(self):
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
         try:
-            result = subprocess.run([str(STOP), str(proc.pid), "1"], capture_output=True, text=True)
+            result = subprocess.run([str(STOP), str(proc.pid), "1", "43123"], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("process-changed", result.stdout)
             self.assertIsNone(proc.poll())
@@ -153,7 +233,22 @@ class DevPulseHelpersTest(unittest.TestCase):
             proc.terminate()
             proc.wait(timeout=3)
 
-    def test_stop_requires_a_start_time_token(self):
+    def test_stop_rejects_process_that_no_longer_owns_listener(self):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            result = subprocess.run(
+                [str(STOP), str(proc.pid), process_start_time(proc.pid), "43123"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("listener-changed", result.stdout)
+            self.assertIsNone(proc.poll())
+        finally:
+            proc.terminate()
+            proc.wait(timeout=3)
+
+    def test_stop_requires_start_time_and_port_tokens(self):
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
         try:
             result = subprocess.run([str(STOP), str(proc.pid)], capture_output=True, text=True)
@@ -163,6 +258,26 @@ class DevPulseHelpersTest(unittest.TestCase):
         finally:
             proc.terminate()
             proc.wait(timeout=3)
+
+    def test_manifest_has_marketplace_safe_metadata_and_entries(self):
+        manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["schemaVersion"], 1)
+        self.assertEqual(manifest["id"], "io.github.gashiartim.devpulse")
+        self.assertEqual(manifest["version"], "0.1.0")
+        self.assertEqual(manifest["license"], "MIT")
+        self.assertTrue(manifest["barWidget"]["defaults"]["includeContainers"])
+        for entry in manifest["entryPoints"].values():
+            path = ROOT / entry
+            self.assertTrue(path.is_file())
+            self.assertFalse(path.is_symlink())
+
+    def test_qml_wires_adaptive_polling_search_and_http_guard(self):
+        service = (ROOT / "Service.qml").read_text(encoding="utf-8")
+        panel = (ROOT / "Panel.qml").read_text(encoding="utf-8")
+        self.assertIn("panelOpen ? activeIntervalSec : refreshIntervalSec", service)
+        self.assertIn("includedPorts: includedPorts, ignoredPorts: ignoredPorts", service)
+        self.assertIn("filterServers(allServers, filterText)", panel)
+        self.assertIn("server.httpAvailable !== true", panel)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "artim.devpulse",
+  "id": "io.github.gashiartim.devpulse",
   "name": "DevPulse",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "author": "Artim",
   "license": "MIT",
-  "description": "A keyboard-first dashboard for discovering and managing local development servers.",
+  "description": "Local dev servers, Git context, Docker ports, and resource usage in one keyboard-first dashboard.",
   "kinds": [
     "service",
     "bar-widget"
@@ -23,7 +23,13 @@
     "defaultSection": "right",
     "defaults": {
       "showMetrics": true,
-      "showGit": true
+      "showGit": true,
+      "warnExposed": true,
+      "includeContainers": true,
+      "includedPorts": "",
+      "ignoredPorts": "",
+      "refreshIntervalSec": 30,
+      "activeIntervalSec": 3
     },
     "schema": [
       {
@@ -37,6 +43,50 @@
         "type": "boolean",
         "label": "Show Git branch",
         "defaultValue": true
+      },
+      {
+        "key": "warnExposed",
+        "type": "boolean",
+        "label": "Warn about LAN-exposed servers",
+        "defaultValue": true
+      },
+      {
+        "key": "includeContainers",
+        "type": "boolean",
+        "label": "Discover published Docker ports",
+        "defaultValue": true
+      },
+      {
+        "key": "includedPorts",
+        "type": "string",
+        "label": "Always include ports",
+        "defaultValue": "",
+        "description": "Comma-separated ports or ranges, for example 4100,9000-9005."
+      },
+      {
+        "key": "ignoredPorts",
+        "type": "string",
+        "label": "Ignore ports",
+        "defaultValue": "",
+        "description": "Comma-separated ports or ranges. Ignoring takes precedence."
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Background refresh (seconds)",
+        "min": 10,
+        "max": 300,
+        "step": 5,
+        "defaultValue": 30
+      },
+      {
+        "key": "activeIntervalSec",
+        "type": "integer",
+        "label": "Open-panel refresh (seconds)",
+        "min": 2,
+        "max": 30,
+        "step": 1,
+        "defaultValue": 3
       }
     ]
   }

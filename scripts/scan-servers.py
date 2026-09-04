@@ -8,13 +8,19 @@ project command or reads environment files.
 
 from __future__ import annotations
 
+import concurrent.futures
+import ipaddress
 import json
 import os
 import re
+import socket
+import ssl
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 HOME = Path(os.environ.get("HOME", str(Path.home()))).resolve()
@@ -28,6 +34,13 @@ PROJECT_FILES = (
     "Cargo.toml", "go.mod", "Gemfile", "composer.json",
 )
 PID_RE = re.compile(r"\bpid=(\d+)\b")
+DOCKER_PORT_RE = re.compile(
+    r"(?P<host>\[[^\]]+\]|[^,\s:]+):(?P<public>\d+)(?:-(?P<public_end>\d+))?"
+    r"->(?P<private>\d+)(?:-(?P<private_end>\d+))?/tcp"
+)
+MAX_SERVERS = 128
+MAX_CONFIG_PORTS = 512
+HTTP_PROBE_TIMEOUT = 0.25
 
 
 def run_capture(argv: list[str], timeout: float = 2.0) -> str:
@@ -40,6 +53,40 @@ def run_capture(argv: list[str], timeout: float = 2.0) -> str:
         return completed.stdout or ""
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+def parse_port_spec(value: object) -> set[int]:
+    ports: set[int] = set()
+    for token in re.split(r"[,\s]+", str(value or "")):
+        if not token:
+            continue
+        try:
+            if "-" in token:
+                start_text, end_text = token.split("-", 1)
+                start, end = int(start_text), int(end_text)
+                if start > end:
+                    start, end = end, start
+            else:
+                start = end = int(token)
+        except ValueError:
+            continue
+        for port in range(max(1, start), min(65535, end) + 1):
+            ports.add(port)
+            if len(ports) >= MAX_CONFIG_PORTS:
+                return ports
+    return ports
+
+
+def read_configuration(argv: list[str]) -> tuple[set[int], set[int]]:
+    try:
+        index = argv.index("--config")
+        raw = argv[index + 1][:4096]
+        value = json.loads(raw)
+    except (ValueError, IndexError, TypeError, json.JSONDecodeError):
+        value = {}
+    if not isinstance(value, dict):
+        value = {}
+    return parse_port_spec(value.get("includedPorts")), parse_port_spec(value.get("ignoredPorts"))
 
 
 def parse_endpoint(value: str) -> tuple[str, int] | None:
@@ -62,6 +109,20 @@ def parse_endpoint(value: str) -> tuple[str, int] | None:
     return host or "*", port
 
 
+def host_is_loopback(host: str) -> bool:
+    candidate = host.split("%", 1)[0]
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return candidate == "localhost"
+
+
+def listener_is_exposed(hosts: set[str]) -> bool:
+    if any(host in {"0.0.0.0", "::", "*"} for host in hosts):
+        return True
+    return any(not host_is_loopback(host) for host in hosts)
+
+
 def browser_host(hosts: set[str]) -> str:
     """Choose a URL-safe host that can reach the reported listener."""
     if not hosts or any(host in {"0.0.0.0", "::", "*"} for host in hosts):
@@ -72,6 +133,56 @@ def browser_host(hosts: set[str]) -> str:
     if ":" in host:
         return f"[{host.replace('%', '%25')}]"
     return host
+
+
+def probe_http_url(url: str) -> bool:
+    """Recognize an HTTP response within a hard, short local deadline."""
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or not parsed.port:
+        return False
+    host = parsed.hostname.replace("%25", "%")
+    connection: socket.socket | ssl.SSLSocket | None = None
+    deadline = time.monotonic() + HTTP_PROBE_TIMEOUT
+    try:
+        connection = socket.create_connection((host, parsed.port), timeout=HTTP_PROBE_TIMEOUT)
+        if parsed.scheme == "https":
+            connection.settimeout(max(0.001, deadline - time.monotonic()))
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            connection = context.wrap_socket(connection, server_hostname=host.split("%", 1)[0])
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        connection.settimeout(remaining)
+        request = f"HEAD / HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode("ascii", "ignore")
+        connection.sendall(request)
+        response = bytearray()
+        while b"\n" not in response and len(response) < 4096:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            connection.settimeout(remaining)
+            chunk = connection.recv(min(1024, 4096 - len(response)))
+            if not chunk:
+                break
+            response.extend(chunk)
+        return bytes(response).lstrip().startswith(b"HTTP/")
+    except (OSError, ValueError, ssl.SSLError):
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def probe_server(row: dict[str, Any]) -> tuple[bool, str]:
+    preferred = str(row.get("url", ""))
+    alternate_scheme = "https" if preferred.startswith("http://") else "http"
+    alternate = re.sub(r"^https?", alternate_scheme, preferred, count=1)
+    for candidate in (preferred, alternate):
+        if probe_http_url(candidate):
+            return True, candidate
+    return False, preferred
 
 
 def parse_listeners() -> dict[tuple[int, int], set[str]]:
@@ -134,6 +245,15 @@ def process_start_time(pid: int) -> str:
     fields = raw[closing + 2:].split()
     # /proc stat field 22 is index 19 after pid and comm have been removed.
     return fields[19] if len(fields) > 19 else ""
+
+
+def process_uptime_seconds(start_time: str) -> int:
+    try:
+        system_uptime = float(read_text(Path("/proc/uptime"), 256).split()[0])
+        ticks_per_second = int(os.sysconf("SC_CLK_TCK"))
+        return max(0, int(system_uptime - int(start_time) / ticks_per_second))
+    except (IndexError, OSError, TypeError, ValueError):
+        return 0
 
 
 def process_cwd(pid: int) -> str:
@@ -253,11 +373,115 @@ def score_server(cwd: str, project_root: Path | None, has_git: bool, framework_s
     return score
 
 
+def docker_label(labels: str, key: str) -> str:
+    match = re.search(rf"(?:^|,){re.escape(key)}=([^,]*)", labels)
+    return match.group(1).strip() if match else ""
+
+
+def parse_docker_published_ports(value: str) -> dict[int, tuple[set[str], int]]:
+    published: dict[int, tuple[set[str], int]] = {}
+    for match in DOCKER_PORT_RE.finditer(value):
+        public_start = int(match.group("public"))
+        public_end = int(match.group("public_end") or public_start)
+        private_start = int(match.group("private"))
+        private_end = int(match.group("private_end") or private_start)
+        count = min(public_end - public_start, private_end - private_start, 15) + 1
+        host = match.group("host").strip("[]")
+        for offset in range(max(0, count)):
+            public_port = public_start + offset
+            if not 1 <= public_port <= 65535:
+                continue
+            private_port = private_start + offset
+            hosts, _ = published.setdefault(public_port, (set(), private_port))
+            hosts.add(host)
+    return published
+
+
+def container_project_name(container: dict[str, Any]) -> str:
+    labels = str(container.get("Labels", ""))
+    project = docker_label(labels, "com.docker.compose.project")
+    service = docker_label(labels, "com.docker.compose.service")
+    raw_name = str(container.get("Names", "")).lstrip("/")
+    if not service:
+        service = raw_name
+        if project and service.endswith("_" + project):
+            service = service[: -(len(project) + 1)]
+        service = re.sub(r"^(?:supabase|docker)[-_]", "", service)
+    project = re.sub(r"[-_]+", " ", project).strip()
+    service = re.sub(r"[-_]+", " ", service).strip()
+    if project and service and service.lower() != project.lower():
+        return f"{project[:1].upper() + project[1:]} · {service}"
+    value = project or service or str(container.get("Image", "Docker container"))
+    return value[:1].upper() + value[1:] if value else "Docker container"
+
+
+def discover_containers() -> list[dict[str, Any]]:
+    raw = run_capture(["docker", "ps", "--no-trunc", "--format", "{{json .}}"], timeout=2.0)
+    containers: list[dict[str, Any]] = []
+    for line in raw.splitlines()[:64]:
+        try:
+            container = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(container, dict):
+            continue
+        container_id = str(container.get("ID", ""))
+        if not container_id:
+            continue
+        labels = str(container.get("Labels", ""))
+        workdir = docker_label(labels, "com.docker.compose.project.working_dir")
+        if not workdir:
+            workdir = docker_label(labels, "com.supabase.cli.workdir")
+        if not os.path.isabs(workdir) or not Path(workdir).is_dir():
+            workdir = ""
+        project_root, _, _ = find_project(workdir)
+        image = str(container.get("Image", "container")).split("@", 1)[0]
+        image_label = image.rsplit("/", 1)[-1].split(":", 1)[0]
+        for public_port, (hosts, private_port) in parse_docker_published_ports(str(container.get("Ports", ""))).items():
+            identity = f"docker:{container_id}:{public_port}"
+            scheme = "https" if private_port in {443, 8443} else "http"
+            containers.append({
+                "id": identity,
+                "pid": 0,
+                "startTime": "",
+                "uptimeSeconds": 0,
+                "runningFor": str(container.get("RunningFor", "")),
+                "containerStatus": str(container.get("Status", "")),
+                "port": public_port,
+                "privatePort": private_port,
+                "bindAddress": "0.0.0.0" if listener_is_exposed(hosts) else sorted(hosts)[0],
+                "bindAddresses": sorted(hosts),
+                "exposed": listener_is_exposed(hosts),
+                "url": f"{scheme}://{browser_host(hosts)}:{public_port}",
+                "httpAvailable": False,
+                "command": str(container.get("Names", "Docker container")),
+                "commandLine": f"docker {image}",
+                "cwd": workdir,
+                "projectRoot": str(project_root) if project_root else workdir,
+                "projectName": container_project_name(container),
+                "framework": f"Docker · {image_label}",
+                "runtime": "Docker",
+                "cpu": 0.0,
+                "memoryBytes": 0,
+                "owner": "",
+                "ownedByUser": False,
+                "canStop": False,
+                "source": "docker",
+                "containerId": container_id,
+                "containerName": str(container.get("Names", "")),
+                "score": 5,
+            })
+    return containers
+
+
 def main() -> int:
+    included_ports, ignored_ports = read_configuration(sys.argv[1:])
     listeners = parse_listeners()
     processes = snapshot_processes()
     output: dict[str, dict[str, Any]] = {}
     for (pid, port), hosts in listeners.items():
+        if port in ignored_ports:
+            continue
         proc = processes.get(pid, {})
         proc_path = Path("/proc") / str(pid)
         try:
@@ -272,7 +496,7 @@ def main() -> int:
         comm = str(proc.get("comm") or read_text(proc_path / "comm", 256).strip()).strip()
         project_root, package, has_git = find_project(cwd)
         framework, runtime, framework_signal = detect_framework(command_line, package, comm)
-        if score_server(cwd, project_root, has_git, framework_signal, port) < 3:
+        if port not in included_ports and score_server(cwd, project_root, has_git, framework_signal, port) < 3:
             continue
         identity = f"{pid}:{port}"
         host_list = sorted(hosts)
@@ -280,14 +504,18 @@ def main() -> int:
         bind_address = "0.0.0.0" if wildcard else (host_list[0] if host_list else "localhost")
         url_host = browser_host(hosts)
         scheme = "https" if re.search(r"(?:https://|--https(?:\b|=)|--ssl(?:\b|=)|--tls(?:\b|=)|\.pem\b|\.key\b)", command_line.lower()) else "http"
+        start_time = process_start_time(pid)
         output[identity] = {
             "id": identity,
             "pid": pid,
-            "startTime": process_start_time(pid),
+            "startTime": start_time,
+            "uptimeSeconds": process_uptime_seconds(start_time),
             "port": port,
             "bindAddress": bind_address,
             "bindAddresses": host_list,
+            "exposed": listener_is_exposed(hosts),
             "url": f"{scheme}://{url_host}:{port}",
+            "httpAvailable": False,
             "command": comm or "Process",
             "commandLine": command_line,
             "cwd": cwd,
@@ -299,9 +527,24 @@ def main() -> int:
             "memoryBytes": int(proc.get("memoryBytes", 0)),
             "owner": str(proc.get("owner", "")),
             "ownedByUser": True,
+            "canStop": True,
+            "source": "process",
             "score": score_server(cwd, project_root, has_git, framework_signal, port),
         }
-    servers = sorted(output.values(), key=lambda row: (str(row["projectName"]).lower(), int(row["port"]), int(row["pid"])))
+    if "--include-containers" in sys.argv[1:]:
+        for container in discover_containers():
+            if int(container["port"]) not in ignored_ports:
+                output[str(container["id"])] = container
+    servers = sorted(
+        output.values(),
+        key=lambda row: (str(row["projectName"]).lower(), int(row["port"]), int(row["pid"])),
+    )[:MAX_SERVERS]
+    if servers:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(servers))) as executor:
+            probe_results = list(executor.map(probe_server, servers))
+        for server, (available, url) in zip(servers, probe_results):
+            server["httpAvailable"] = available
+            server["url"] = url
     json.dump(servers, sys.stdout, ensure_ascii=False, separators=(",", ":"))
     sys.stdout.write("\n")
     return 0

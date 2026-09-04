@@ -6,19 +6,46 @@ import qs.Ui
 
 BarWidget {
   id: root
-  moduleName: "artim.devpulse"
+  moduleName: "io.github.gashiartim.devpulse"
 
   property var service: null
 
   readonly property int serverCount: service ? service.servers.length : 0
+  readonly property int exposedCount: countExposedServers()
+  readonly property bool warnExposed: setting("warnExposed", true) !== false
   readonly property string displayLabel: "󰆍 " + String(serverCount)
-  readonly property string tooltipLabel: serverCount === 1
-    ? "1 development server running"
-    : String(serverCount) + " development servers running"
+  readonly property string tooltipLabel: {
+    var base = serverCount === 1
+      ? "1 development server running"
+      : String(serverCount) + " development servers running"
+    if (exposedCount > 0)
+      base += "\n" + String(exposedCount) + " reachable from the local network"
+    return base
+  }
+
+  function countExposedServers() {
+    if (!service || !Array.isArray(service.servers)) return 0
+    var count = 0
+    for (var i = 0; i < service.servers.length; i++)
+      if (service.servers[i] && service.servers[i].exposed === true) count++
+    return count
+  }
+
+  function configureService() {
+    if (!service || typeof service.configure !== "function") return
+    service.configure({
+      includeContainers: setting("includeContainers", true),
+      includedPorts: setting("includedPorts", ""),
+      ignoredPorts: setting("ignoredPorts", ""),
+      refreshIntervalSec: setting("refreshIntervalSec", 30),
+      activeIntervalSec: setting("activeIntervalSec", 3)
+    })
+  }
 
   function resolveService() {
     if (bar && bar.shell && typeof bar.shell.serviceFor === "function")
-      service = bar.shell.serviceFor("artim.devpulse")
+      service = bar.shell.serviceFor("io.github.gashiartim.devpulse")
+    configureService()
     injectPanel()
   }
 
@@ -63,8 +90,14 @@ BarWidget {
     resolveService()
     injectPanel()
   }
-  onSettingsChanged: injectPanel()
-  onServiceChanged: injectPanel()
+  onSettingsChanged: {
+    configureService()
+    injectPanel()
+  }
+  onServiceChanged: {
+    configureService()
+    injectPanel()
+  }
 
   Timer {
     interval: 500
@@ -85,7 +118,7 @@ BarWidget {
   }
 
   IpcHandler {
-    target: "artim.devpulse"
+    target: "io.github.gashiartim.devpulse"
     function refresh(): string { root.refresh(); return "ok" }
     function open(): void { root.open() }
     function close(): void { root.close() }
@@ -100,7 +133,7 @@ BarWidget {
     bar: root.bar
     text: root.bar && root.bar.vertical ? "󰆍" : root.displayLabel
     labelVisible: true
-    active: false
+    active: root.warnExposed && root.exposedCount > 0
     tooltipText: root.tooltipLabel
     horizontalMargin: 7.5
     verticalPadding: 6

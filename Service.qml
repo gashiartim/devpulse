@@ -13,10 +13,18 @@ Item {
   property var servers: []
   property bool scanning: false
   property bool queuedRefresh: false
+  property string scanOutput: ""
   property string lastMessage: ""
   property int pendingStopPort: 0
+  property bool panelOpen: false
+  property bool includeContainers: true
+  property string includedPorts: ""
+  property string ignoredPorts: ""
+  property int refreshIntervalSec: 30
+  property int activeIntervalSec: 3
 
-  readonly property string pluginDir: Quickshell.env("HOME") + "/.config/omarchy/plugins/artim.devpulse"
+  readonly property int scanIntervalMs: (panelOpen ? activeIntervalSec : refreshIntervalSec) * 1000
+  readonly property string pluginDir: Quickshell.env("HOME") + "/.config/omarchy/plugins/io.github.gashiartim.devpulse"
   readonly property string scannerPath: pluginDir + "/scripts/scan-servers.py"
   readonly property string gitInfoPath: pluginDir + "/scripts/git-info.py"
   readonly property string stopServerPath: pluginDir + "/scripts/stop-server.py"
@@ -24,12 +32,39 @@ Item {
   property var gitCache: ({})
   property double lastGitScanMs: 0
 
+  function boundedSeconds(value, fallback, minimum, maximum) {
+    var parsed = Math.floor(Number(value))
+    if (!Number.isFinite(parsed)) return fallback
+    return Math.max(minimum, Math.min(maximum, parsed))
+  }
+
+  function configure(values) {
+    var config = values || ({})
+    includeContainers = config.includeContainers !== false
+    includedPorts = String(config.includedPorts || "").slice(0, 256)
+    ignoredPorts = String(config.ignoredPorts || "").slice(0, 256)
+    refreshIntervalSec = boundedSeconds(config.refreshIntervalSec, 30, 10, 300)
+    activeIntervalSec = boundedSeconds(config.activeIntervalSec, 3, 2, 30)
+  }
+
+  function setPanelOpen(value) {
+    var next = value === true
+    if (panelOpen === next) return
+    panelOpen = next
+    if (next) refreshNow()
+  }
+
   function refreshNow() {
     if (scanProcess.running) {
       queuedRefresh = true
       return
     }
     scanning = true
+    scanOutput = ""
+    var config = JSON.stringify({ includedPorts: includedPorts, ignoredPorts: ignoredPorts })
+    scanProcess.command = includeContainers
+      ? [scannerPath, "--include-containers", "--config", config]
+      : [scannerPath, "--config", config]
     scanProcess.running = true
   }
 
@@ -52,17 +87,26 @@ Item {
     return result
   }
 
-  function applyScan(raw) {
-    var parsed = []
-    try { parsed = JSON.parse(String(raw || "[]")) } catch (e) {
-      console.warn("DevPulse: scanner returned invalid JSON", e)
-    }
-    servers = normalizeServers(parsed)
+  function finishScanCycle() {
     scanning = false
     if (queuedRefresh) {
       queuedRefresh = false
       Qt.callLater(refreshNow)
     }
+  }
+
+  function applyScan(raw) {
+    var parsed = null
+    try { parsed = JSON.parse(String(raw || "[]")) } catch (e) {
+      console.warn("DevPulse: scanner returned invalid JSON", e)
+    }
+    if (!Array.isArray(parsed)) {
+      setMessage("Server scan failed — keeping the last snapshot")
+      finishScanCycle()
+      return
+    }
+    servers = normalizeServers(parsed)
+    finishScanCycle()
     if (Date.now() - lastGitScanMs >= 15000) refreshGit()
   }
 
@@ -113,13 +157,13 @@ Item {
       return
     }
     pendingStopPort = Math.max(0, Math.floor(Number(server.port || 0)))
-    stopProcess.command = [stopServerPath, String(pid), String(server.startTime)]
+    stopProcess.command = [stopServerPath, String(pid), String(server.startTime), String(pendingStopPort)]
     stopProcess.running = true
   }
 
   Timer {
     id: scanTimer
-    interval: 3000
+    interval: root.scanIntervalMs
     repeat: true
     running: true
     triggeredOnStart: true
@@ -135,9 +179,16 @@ Item {
   Process {
     id: scanProcess
     command: [root.scannerPath]
+    onExited: function(exitCode) {
+      if (exitCode === 0) root.applyScan(root.scanOutput)
+      else {
+        root.setMessage("Server scan failed — keeping the last snapshot")
+        root.finishScanCycle()
+      }
+    }
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.applyScan(text)
+      onStreamFinished: root.scanOutput = text
     }
     stderr: StdioCollector { waitForEnd: true }
   }
@@ -161,6 +212,7 @@ Item {
         if (result && result.ok === true) root.setMessage("Stopping server on :" + String(root.pendingStopPort || "server"))
         else if (result && result.reason === "process-changed") root.setMessage("Process changed — refresh required")
         else if (result && result.reason === "process-gone") root.setMessage("Server already stopped")
+        else if (result && result.reason === "listener-changed") root.setMessage("Listener changed — refresh required")
         else root.setMessage("Could not stop that process")
         Qt.callLater(root.refreshNow)
       }

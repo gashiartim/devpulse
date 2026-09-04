@@ -6,14 +6,15 @@ import qs.Ui
 
 Panel {
   id: root
-  moduleName: "artim.devpulse"
-  ipcTarget: "artim.devpulse"
+  moduleName: "io.github.gashiartim.devpulse"
+  ipcTarget: "io.github.gashiartim.devpulse"
   manageIpc: false
 
   property var anchorItem: null
   property var hostWidget: null
   property var service: null
   property bool openedFromHotkey: false
+  property string filterText: ""
   property int selectedIndex: -1
   property string selectedServerId: ""
   property bool cursorActive: false
@@ -22,8 +23,12 @@ Panel {
   property double nowMs: Date.now()
 
   readonly property var barIdentity: hostWidget || root
-  readonly property var serverList: service ? service.servers : []
+  readonly property var allServers: service ? service.servers : []
+  readonly property var serverList: filterServers(allServers, filterText)
   readonly property int serverCount: serverList.length
+  readonly property int totalServerCount: allServers.length
+  readonly property int exposedCount: countExposed(allServers)
+  readonly property bool searchVisible: totalServerCount > 4 || filterText !== ""
   readonly property color foreground: bar ? bar.barForeground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
@@ -31,6 +36,40 @@ Panel {
   readonly property bool showGit: setting("showGit", true) !== false
   readonly property var selectedServer: selectedIndex >= 0 && selectedIndex < serverList.length
     ? serverList[selectedIndex] : null
+
+  function filterServers(servers, query) {
+    if (!Array.isArray(servers)) return []
+    var needle = String(query || "").trim().toLowerCase()
+    if (!needle) return servers
+    return servers.filter(function(server) {
+      var haystack = [
+        server.projectName, server.framework, server.runtime, server.port,
+        server.cwd, server.projectRoot, server.command, server.commandLine,
+        server.gitBranch, server.bindAddress, server.source, server.containerName
+      ].join(" ").toLowerCase()
+      return haystack.indexOf(needle) >= 0
+    })
+  }
+
+  function countExposed(servers) {
+    if (!Array.isArray(servers)) return 0
+    var count = 0
+    for (var i = 0; i < servers.length; i++)
+      if (servers[i] && servers[i].exposed === true) count++
+    return count
+  }
+
+  function focusSearch() {
+    if (!searchVisible) return
+    searchField.forceActiveFocus()
+    searchField.selectAll()
+  }
+
+  function leaveSearch(clear) {
+    if (clear) filterText = ""
+    searchField.focus = false
+    keyCatcher.forceActiveFocus()
+  }
 
   function setCenterHoverRevealSuppressed(value) {
     if (bar && "centerHoverRevealSuppressed" in bar) bar.centerHoverRevealSuppressed = value
@@ -121,7 +160,11 @@ Panel {
   function openSelected() {
     var server = root.selectedServer
     if (!server) return
-    Quickshell.execDetached(["omarchy-launch-browser", String(server.url || "http://localhost:" + server.port)])
+    if (server.httpAvailable !== true) {
+      if (service) service.setMessage("No HTTP response from :" + String(server.port || ""))
+      return
+    }
+    Quickshell.execDetached(["omarchy-launch-browser", String(server.url)])
     root.close()
   }
 
@@ -136,15 +179,24 @@ Panel {
     ])
   }
 
+  function editorSelected() {
+    var server = root.selectedServer
+    if (!server || !server.cwd) return
+    Quickshell.execDetached(["omarchy-launch-editor", String(server.cwd)])
+  }
+
   function copySelected() {
     var server = root.selectedServer
     if (!server) return
-    Quickshell.execDetached(["wl-copy", String(server.url || "http://localhost:" + server.port)])
-    if (service) service.setMessage("Copied " + String(server.url || "localhost:" + server.port))
+    var value = server.httpAvailable === true
+      ? String(server.url)
+      : String((server.bindAddress && server.bindAddress !== "0.0.0.0") ? server.bindAddress : "localhost") + ":" + String(server.port)
+    Quickshell.execDetached(["wl-copy", value])
+    if (service) service.setMessage("Copied " + value)
   }
 
   function requestStop() {
-    if (!root.selectedServer || root.confirmOpen) return
+    if (!root.selectedServer || root.selectedServer.canStop === false || root.confirmOpen) return
     pendingStopServer = root.selectedServer
     confirmOpen = true
     Qt.callLater(function() { if (confirmOpen) confirmOverlay.forceActiveFocus() })
@@ -165,10 +217,17 @@ Panel {
   }
 
   onServerListChanged: clampSelection()
-  onOpenedChanged: if (opened) {
-    clampSelection()
-    nowMs = Date.now()
+  onServiceChanged: if (service && typeof service.setPanelOpen === "function") service.setPanelOpen(opened)
+  onOpenedChanged: {
+    if (service && typeof service.setPanelOpen === "function") service.setPanelOpen(opened)
+    if (opened) {
+      clampSelection()
+      nowMs = Date.now()
+    } else {
+      filterText = ""
+    }
   }
+  Component.onDestruction: if (service && typeof service.setPanelOpen === "function") service.setPanelOpen(false)
 
   Timer {
     interval: 30000
@@ -190,7 +249,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: root.confirmOpen
+      blocked: root.confirmOpen || searchField.activeFocus
 
       onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveSelection(dy) }
       onActivateRequested: root.openSelected()
@@ -201,6 +260,8 @@ Panel {
         if (text === "r" || text === "R") { if (root.service) root.service.refreshNow() }
         else if (text === "c" || text === "C") root.copySelected()
         else if (text === "t" || text === "T") root.terminalSelected()
+        else if (text === "e" || text === "E") root.editorSelected()
+        else if (text === "/") root.focusSearch()
       }
 
       Flickable {
@@ -224,9 +285,10 @@ Panel {
             title: "DevPulse"
             meta: root.service && root.service.scanning
               ? "Scanning local listeners…"
-              : (root.serverCount === 0
+              : (root.totalServerCount === 0
                 ? "No development servers"
-                : String(root.serverCount) + " development server" + (root.serverCount === 1 ? "" : "s"))
+                : String(root.totalServerCount) + " development server" + (root.totalServerCount === 1 ? "" : "s")
+                  + (root.exposedCount > 0 ? " · " + String(root.exposedCount) + " LAN exposed" : ""))
             foreground: root.foreground
             fontFamily: root.fontFamily
             iconComponent: Component {
@@ -251,9 +313,30 @@ Panel {
             elide: Text.ElideRight
           }
 
+          TextField {
+            id: searchField
+            width: parent.width
+            visible: root.searchVisible
+            placeholderText: "Search project, framework, port, branch, or path…"
+            text: root.filterText
+            foreground: root.foreground
+            accent: Color.accent
+            onTextChanged: if (root.filterText !== text) root.filterText = text
+            Keys.onPressed: function(event) {
+              if (event.key === Qt.Key_Escape) {
+                root.leaveSearch(root.filterText !== "")
+                event.accepted = true
+              } else if (event.key === Qt.Key_Down || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                root.leaveSearch(false)
+                root.selectIndex(0, true)
+                event.accepted = true
+              }
+            }
+          }
+
           Text {
             width: parent.width
-            visible: root.serverCount === 0 && !(root.service && root.service.scanning)
+            visible: root.totalServerCount === 0 && !(root.service && root.service.scanning)
             topPadding: Style.space(22)
             bottomPadding: Style.space(22)
             textFormat: Text.PlainText
@@ -263,6 +346,20 @@ Panel {
             font.pixelSize: Style.font.body
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
+          }
+
+          Text {
+            width: parent.width
+            visible: root.totalServerCount > 0 && root.serverCount === 0
+            topPadding: Style.space(18)
+            bottomPadding: Style.space(18)
+            textFormat: Text.PlainText
+            text: "No servers match “" + root.filterText + "”"
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            horizontalAlignment: Text.AlignHCenter
+            elide: Text.ElideRight
           }
 
           ListView {
@@ -310,7 +407,9 @@ Panel {
                   Text {
                     textFormat: Text.PlainText
                     text: "●"
-                    color: root.cursorActive && serverRow.current ? Color.accent : Color.foreground
+                    color: modelData.exposed === true
+                      ? (bar ? bar.urgent : Color.urgent)
+                      : (root.cursorActive && serverRow.current ? Color.accent : Color.foreground)
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                     anchors.verticalCenter: parent.verticalCenter
@@ -343,7 +442,9 @@ Panel {
                   width: parent.width
                   textFormat: Text.PlainText
                   text: String(modelData.framework || modelData.runtime || "Process")
-                  color: root.dim
+                    + (modelData.exposed === true ? " · LAN exposed" : "")
+                    + (modelData.httpAvailable === true ? "" : " · no HTTP response")
+                  color: modelData.exposed === true ? (bar ? bar.urgent : Color.urgent) : root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.bodySmall
                   elide: Text.ElideRight
@@ -394,20 +495,20 @@ Panel {
             id: actionRow
             width: parent.width
             spacing: Style.space(3)
-            readonly property real actionWidth: (width - spacing * 4) / 5
+            readonly property real actionWidth: (width - spacing * 5) / 6
 
             ActionButton {
               width: actionRow.actionWidth
               text: "↵ Open"
               tooltipText: "Open in browser"
               foreground: root.dim
-              enabled: root.selectedServer !== null
+              enabled: root.selectedServer !== null && root.selectedServer.httpAvailable === true
               onClicked: root.openSelected()
             }
 
             ActionButton {
               width: actionRow.actionWidth
-              text: "t Terminal"
+              text: "t Term"
               tooltipText: "Open project terminal"
               foreground: root.dim
               enabled: root.selectedServer !== null && !!root.selectedServer.cwd
@@ -416,8 +517,17 @@ Panel {
 
             ActionButton {
               width: actionRow.actionWidth
+              text: "e Edit"
+              tooltipText: "Open project in the default editor"
+              foreground: root.dim
+              enabled: root.selectedServer !== null && !!root.selectedServer.cwd
+              onClicked: root.editorSelected()
+            }
+
+            ActionButton {
+              width: actionRow.actionWidth
               text: "c Copy"
-              tooltipText: "Copy server URL"
+              tooltipText: "Copy web URL or listener address"
               foreground: root.dim
               enabled: root.selectedServer !== null
               onClicked: root.copySelected()
@@ -429,13 +539,13 @@ Panel {
               tooltipText: "Stop server"
               foreground: root.dim
               accent: bar ? bar.urgent : Color.urgent
-              enabled: root.selectedServer !== null
+              enabled: root.selectedServer !== null && root.selectedServer.canStop !== false
               onClicked: root.requestStop()
             }
 
             ActionButton {
               width: actionRow.actionWidth
-              text: "r Refresh"
+              text: "r Scan"
               tooltipText: "Refresh servers"
               foreground: root.dim
               enabled: root.service !== null && !root.service.scanning
@@ -492,10 +602,19 @@ Panel {
     return Math.max(1, Math.round(value / (1024 * 1024))) + " MB"
   }
 
+  function formatDuration(seconds) {
+    var value = Math.max(0, Math.floor(Number(seconds) || 0))
+    if (value < 60) return value + "s"
+    if (value < 3600) return Math.floor(value / 60) + "m"
+    if (value < 86400) return Math.floor(value / 3600) + "h " + Math.floor((value % 3600) / 60) + "m"
+    return Math.floor(value / 86400) + "d " + Math.floor((value % 86400) / 3600) + "h"
+  }
+
   function metricsText(server) {
     if (!server) return ""
+    if (server.source === "docker") return "Container · " + String(server.containerStatus || server.runningFor || "running")
     var cpu = Number(server.cpu)
     var cpuText = isFinite(cpu) ? cpu.toFixed(1) + "%" : "--"
-    return cpuText + " · " + formatMemory(server.memoryBytes)
+    return cpuText + " · " + formatMemory(server.memoryBytes) + " · " + formatDuration(server.uptimeSeconds)
   }
 }
