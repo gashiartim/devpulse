@@ -1,5 +1,7 @@
 # DevPulse
 
+[![CI](https://github.com/gashiartim/devpulse/actions/workflows/ci.yml/badge.svg)](https://github.com/gashiartim/devpulse/actions/workflows/ci.yml)
+
 DevPulse is a keyboard-first Omarchy observability dashboard for local development servers. See what is running, which branch it belongs to, whether it is reachable, and what it is consuming—without project configuration.
 
 ## Features
