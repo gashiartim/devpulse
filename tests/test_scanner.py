@@ -309,7 +309,7 @@ class DevPulseHelpersTest(unittest.TestCase):
         manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["schemaVersion"], 1)
         self.assertEqual(manifest["id"], "io.github.gashiartim.devpulse")
-        self.assertEqual(manifest["version"], "0.2.0")
+        self.assertEqual(manifest["version"], "0.2.1")
         self.assertEqual(manifest["license"], "MIT")
         self.assertTrue(manifest["barWidget"]["defaults"]["includeContainers"])
         for entry in manifest["entryPoints"].values():
@@ -325,6 +325,7 @@ class DevPulseHelpersTest(unittest.TestCase):
         self.assertIn("filterServers(allServers, filterText)", panel)
         self.assertIn("server.httpAvailable !== true", panel)
         self.assertIn("stopContainerPath", service)
+        self.assertIn("Stopping container on :", service)
 
 
 if __name__ == "__main__":

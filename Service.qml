@@ -25,6 +25,7 @@ Item {
   property int activeIntervalSec: 3
 
   readonly property int scanIntervalMs: (panelOpen ? activeIntervalSec : refreshIntervalSec) * 1000
+  readonly property bool stopping: stopProcess.running
   readonly property string pluginDir: Quickshell.env("HOME") + "/.config/omarchy/plugins/io.github.gashiartim.devpulse"
   readonly property string scannerPath: pluginDir + "/scripts/scan-servers.py"
   readonly property string gitInfoPath: pluginDir + "/scripts/git-info.py"
@@ -161,6 +162,7 @@ Item {
         return
       }
       pendingStopKind = "container"
+      setMessage("Stopping container on :" + String(pendingStopPort) + "… this can take 10 seconds")
       stopProcess.command = [stopContainerPath, containerId, String(pendingStopPort)]
       stopProcess.running = true
       return
@@ -174,6 +176,7 @@ Item {
       return
     }
     pendingStopKind = "process"
+    setMessage("Stopping server on :" + String(pendingStopPort) + "…")
     stopProcess.command = [stopServerPath, String(pid), String(server.startTime), String(pendingStopPort)]
     stopProcess.running = true
   }
@@ -190,7 +193,10 @@ Item {
   Timer {
     id: messageTimer
     interval: 2200
-    onTriggered: root.lastMessage = ""
+    onTriggered: {
+      if (root.stopping) restart()
+      else root.lastMessage = ""
+    }
   }
 
   Process {

@@ -19,7 +19,7 @@ DevPulse is a keyboard-first Omarchy observability dashboard for local developme
 - Open a terminal in the project directory or launch the configured editor
 - Copy the detected web URL or raw listener address
 - Safe, confirmed host-process stop with UID, process-start-time, and live socket-ownership verification
-- Verified Docker container stop with full container identity and published-port revalidation
+- Verified Docker container stop with full container identity, published-port revalidation, and visible progress during the graceful timeout
 - Adaptive polling: fast while the panel is open and battery-friendly in the background
 - Keyboard navigation with native Omarchy panel behavior and stable selection across refreshes
 - Native Omarchy bar widget and popup styling

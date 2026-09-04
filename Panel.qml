@@ -285,13 +285,15 @@ Panel {
           PanelHero {
             width: parent.width
             title: "DevPulse"
-            meta: root.service && root.service.scanning
-              ? "Scanning local listeners…"
-              : (root.totalServerCount === 0
+            meta: root.service && root.service.stopping
+              ? "Stopping selected target…"
+              : (root.service && root.service.scanning
+                ? "Scanning local listeners…"
+                : (root.totalServerCount === 0
                 ? "No development servers"
                 : String(root.totalServerCount) + " development server" + (root.totalServerCount === 1 ? "" : "s")
                   + (root.unhealthyCount > 0 ? " · " + String(root.unhealthyCount) + " unhealthy" : "")
-                  + (root.exposedCount > 0 ? " · " + String(root.exposedCount) + " LAN exposed" : ""))
+                  + (root.exposedCount > 0 ? " · " + String(root.exposedCount) + " LAN exposed" : "")))
             foreground: root.foreground
             fontFamily: root.fontFamily
             iconComponent: Component {
@@ -541,13 +543,14 @@ Panel {
 
             ActionButton {
               width: actionRow.actionWidth
-              text: "x Stop"
+              text: root.service && root.service.stopping ? "… Stop" : "x Stop"
               tooltipText: root.selectedServer && root.selectedServer.source === "docker"
                 ? "Stop Docker container"
                 : "Stop server process"
               foreground: root.dim
               accent: bar ? bar.urgent : Color.urgent
               enabled: root.selectedServer !== null && root.selectedServer.canStop !== false
+                && !(root.service && root.service.stopping)
               onClicked: root.requestStop()
             }
 
